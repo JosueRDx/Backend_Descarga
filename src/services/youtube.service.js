@@ -1,7 +1,10 @@
-const ytdl = require('ytdl-core');
-const ffmpeg = require('fluent-ffmpeg');
-const fs = require('fs');
-const { generateUniqueFileName, getTmpFilePath, deleteFile } = require('../utils/fileManager');
+const youtubedl = require('youtube-dl-exec');
+const { generateUniqueFileName, getTmpFilePath } = require('../utils/fileManager');
+
+/**
+ * Expresión regular para validar URLs de YouTube
+ */
+const YOUTUBE_REGEX = /^(https?:\/\/)?(www\.)?(youtube\.com\/(watch\?v=|shorts\/)|youtu\.be\/)[a-zA-Z0-9_-]{11}/;
 
 /**
  * Valida que la URL sea de YouTube
@@ -9,7 +12,8 @@ const { generateUniqueFileName, getTmpFilePath, deleteFile } = require('../utils
  * @returns {boolean}
  */
 const isValidYoutubeUrl = (url) => {
-  return ytdl.validateURL(url);
+  if (!url || typeof url !== 'string') return false;
+  return YOUTUBE_REGEX.test(url);
 };
 
 /**
@@ -19,12 +23,18 @@ const isValidYoutubeUrl = (url) => {
  */
 const getVideoInfo = async (url) => {
   try {
-    const info = await ytdl.getInfo(url);
+    const info = await youtubedl(url, {
+      dumpSingleJson: true,
+      noWarnings: true,
+      noCheckCertificates: true,
+      preferFreeFormats: true
+    });
+
     return {
-      title: info.videoDetails.title,
-      author: info.videoDetails.author.name,
-      duration: info.videoDetails.lengthSeconds,
-      thumbnail: info.videoDetails.thumbnails[0]?.url || null
+      title: info.title || 'Sin título',
+      author: info.uploader || info.channel || 'Desconocido',
+      duration: info.duration || 0,
+      thumbnail: info.thumbnail || info.thumbnails?.[0]?.url || null
     };
   } catch (error) {
     throw new Error(`Error al obtener información del video: ${error.message}`);
@@ -32,7 +42,7 @@ const getVideoInfo = async (url) => {
 };
 
 /**
- * Descarga el audio de YouTube y lo convierte a MP3
+ * Descarga el audio de YouTube y lo convierte a MP3 usando yt-dlp
  * @param {string} url - URL del video de YouTube
  * @returns {Promise<Object>} - Objeto con la ruta del archivo y metadata
  */
@@ -45,74 +55,40 @@ const downloadAndConvertToMp3 = async (url) => {
   // 2. Obtener información del video
   const videoInfo = await getVideoInfo(url);
 
-  // 3. Generar nombres de archivos temporales
-  const tempAudioName = generateUniqueFileName('webm');
+  // 3. Generar nombre de archivo MP3
   const mp3FileName = generateUniqueFileName('mp3');
-
-  const tempAudioPath = getTmpFilePath(tempAudioName);
   const mp3FilePath = getTmpFilePath(mp3FileName);
 
-  return new Promise((resolve, reject) => {
-    // 4. Crear stream de descarga (solo audio)
-    const audioStream = ytdl(url, {
-      quality: 'highestaudio',
-      filter: 'audioonly'
+  // 4. Remover la extensión .mp3 para el output template (yt-dlp la agrega automáticamente)
+  const outputTemplate = mp3FilePath.replace(/\.mp3$/, '');
+
+  try {
+    console.log('Iniciando descarga y conversión a MP3 con yt-dlp...');
+
+    // 5. Descargar y convertir usando yt-dlp con ffmpeg
+    // Se envuelve la ruta en comillas para manejar espacios en el path de Windows
+    await youtubedl(url, {
+      extractAudio: true,
+      audioFormat: 'mp3',
+      audioQuality: 0, // Mejor calidad
+      output: `"${outputTemplate}.%(ext)s"`,
+      noWarnings: true,
+      noCheckCertificates: true,
+      preferFreeFormats: true,
+      noPlaylist: true
     });
 
-    // 5. Guardar audio temporal en disco
-    const writeStream = fs.createWriteStream(tempAudioPath);
+    console.log('Descarga y conversión a MP3 completada');
 
-    audioStream.pipe(writeStream);
-
-    // Manejar errores de descarga
-    audioStream.on('error', (error) => {
-      reject(new Error(`Error en descarga: ${error.message}`));
-    });
-
-    // 6. Cuando termine la descarga, convertir a MP3
-    writeStream.on('finish', () => {
-      console.log('Descarga completada, iniciando conversión a MP3...');
-
-      // 7. Usar ffmpeg para convertir a MP3
-      ffmpeg(tempAudioPath)
-        .audioBitrate(128)
-        .audioChannels(2)
-        .audioFrequency(44100)
-        .format('mp3')
-        .on('start', (command) => {
-          console.log('Comando ffmpeg:', command);
-        })
-        .on('progress', (progress) => {
-          if (progress.percent) {
-            console.log(`Conversión: ${Math.round(progress.percent)}%`);
-          }
-        })
-        .on('error', async (error) => {
-          // Limpiar archivo temporal en caso de error
-          await deleteFile(tempAudioPath);
-          reject(new Error(`Error en conversión: ${error.message}`));
-        })
-        .on('end', async () => {
-          console.log('Conversión a MP3 completada');
-
-          // 8. Eliminar archivo temporal (webm)
-          await deleteFile(tempAudioPath);
-
-          // 9. Retornar información del archivo convertido
-          resolve({
-            filePath: mp3FilePath,
-            fileName: mp3FileName,
-            videoInfo: videoInfo
-          });
-        })
-        .save(mp3FilePath);
-    });
-
-    // Manejar errores de escritura
-    writeStream.on('error', (error) => {
-      reject(new Error(`Error al guardar audio: ${error.message}`));
-    });
-  });
+    // 6. Retornar información del archivo convertido
+    return {
+      filePath: mp3FilePath,
+      fileName: mp3FileName,
+      videoInfo: videoInfo
+    };
+  } catch (error) {
+    throw new Error(`Error en descarga/conversión: ${error.message}`);
+  }
 };
 
 module.exports = {
