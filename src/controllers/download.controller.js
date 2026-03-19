@@ -10,28 +10,12 @@ const descargarAudio = async (req, res) => {
   try {
     const { url } = req.body;
 
-    // 1. Validar que se envió la URL
-    if (!url) {
-      return res.status(400).json({
-        success: false,
-        error: 'La URL es requerida'
-      });
-    }
-
-    // 2. Validar que sea una URL de YouTube válida
-    if (!youtubeService.isValidYoutubeUrl(url)) {
-      return res.status(400).json({
-        success: false,
-        error: 'URL de YouTube no válida'
-      });
-    }
-
     console.log(`Iniciando descarga: ${url}`);
 
-    // 3. Descargar y convertir a MP3
+    // 1. Descargar y convertir a MP3
     const result = await youtubeService.downloadAndConvertToMp3(url);
 
-    // 4. Limpiar el título para usarlo como nombre de archivo
+    // 2. Limpiar el título para usarlo como nombre de archivo
     const safeTitle = result.videoInfo.title
       .replace(/[^a-zA-Z0-9\s]/g, '')
       .replace(/\s+/g, '_')
@@ -39,7 +23,7 @@ const descargarAudio = async (req, res) => {
 
     const downloadName = `${safeTitle}.mp3`;
 
-    // 5. Enviar archivo como descarga
+    // 3. Enviar archivo como descarga
     res.download(result.filePath, downloadName, (err) => {
       if (err) {
         console.error('Error al enviar archivo:', err.message);
@@ -52,7 +36,7 @@ const descargarAudio = async (req, res) => {
         }
       }
 
-      // 6. Programar eliminación del archivo después de enviar (5 minutos)
+      // 4. Programar eliminación del archivo después de enviar (5 minutos)
       console.log(`Archivo enviado: ${downloadName}`);
       deleteFileAfterDelay(result.filePath, 300000);
     });
@@ -75,20 +59,6 @@ const descargarAudio = async (req, res) => {
 const obtenerInfo = async (req, res) => {
   try {
     const { url } = req.body;
-
-    if (!url) {
-      return res.status(400).json({
-        success: false,
-        error: 'La URL es requerida'
-      });
-    }
-
-    if (!youtubeService.isValidYoutubeUrl(url)) {
-      return res.status(400).json({
-        success: false,
-        error: 'URL de YouTube no válida'
-      });
-    }
 
     const videoInfo = await youtubeService.getVideoInfo(url);
 
