@@ -1,5 +1,48 @@
 const youtubedl = require('youtube-dl-exec');
+const fs = require('fs');
+const path = require('path');
 const { generateUniqueFileName, getTmpFilePath } = require('../utils/fileManager');
+
+/**
+ * Rutas posibles para el archivo de cookies
+ */
+const COOKIES_PATHS = [
+  '/etc/secrets/cookies.txt',
+  path.join(process.cwd(), 'cookies.txt')
+];
+
+/**
+ * Detecta y retorna la ruta del archivo de cookies si existe
+ * @returns {string|null} - Ruta del archivo de cookies o null si no existe
+ */
+const getCookiesPath = () => {
+  for (const cookiePath of COOKIES_PATHS) {
+    if (fs.existsSync(cookiePath)) {
+      console.log(`[cookies] Archivo encontrado: ${cookiePath}`);
+      return cookiePath;
+    }
+  }
+  console.log('[cookies] No se encontró archivo de cookies, continuando sin autenticación');
+  return null;
+};
+
+/**
+ * Genera las opciones base para youtube-dl-exec incluyendo cookies si están disponibles
+ * @returns {Object} - Opciones base para yt-dlp
+ */
+const getBaseOptions = () => {
+  const options = {
+    noCheckCertificates: true,
+    preferFreeFormats: true
+  };
+
+  const cookiesPath = getCookiesPath();
+  if (cookiesPath) {
+    options.cookies = `"${cookiesPath}"`;
+  }
+
+  return options;
+};
 
 /**
  * Expresión regular para validar URLs de YouTube
@@ -24,10 +67,9 @@ const isValidYoutubeUrl = (url) => {
 const getVideoInfo = async (url) => {
   try {
     const info = await youtubedl(url, {
+      ...getBaseOptions(),
       dumpSingleJson: true,
-      noWarnings: true,
-      noCheckCertificates: true,
-      preferFreeFormats: true
+      noWarnings: true
     });
 
     return {
@@ -66,15 +108,13 @@ const downloadAndConvertToMp3 = async (url) => {
     console.log('Iniciando descarga y conversión a MP3 con yt-dlp...');
 
     // 5. Descargar y convertir usando yt-dlp con ffmpeg
-    // Se envuelve la ruta en comillas para manejar espacios en el path de Windows
     await youtubedl(url, {
+      ...getBaseOptions(),
       extractAudio: true,
       audioFormat: 'mp3',
-      audioQuality: 0, // Mejor calidad
+      audioQuality: 0,
       output: `"${outputTemplate}.%(ext)s"`,
       noWarnings: true,
-      noCheckCertificates: true,
-      preferFreeFormats: true,
       noPlaylist: true
     });
 

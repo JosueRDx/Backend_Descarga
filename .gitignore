@@ -5,6 +5,9 @@ node_modules/
 .env
 .env.*
 
+# Cookies
+cookies.txt
+
 # Logs
 logs/
 *.log
