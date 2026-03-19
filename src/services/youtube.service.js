@@ -1,42 +1,92 @@
 const youtubedl = require('youtube-dl-exec');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { generateUniqueFileName, getTmpFilePath } = require('../utils/fileManager');
 
 /**
  * Rutas posibles para el archivo de cookies
  */
-const COOKIES_PATHS = [
+const COOKIES_SOURCE_PATHS = [
   '/etc/secrets/cookies.txt',
   path.join(process.cwd(), 'cookies.txt')
 ];
 
 /**
- * Detecta y retorna la ruta del archivo de cookies si existe
- * @returns {string|null} - Ruta del archivo de cookies o null si no existe
+ * Ruta temporal para cookies
  */
-const getCookiesPath = () => {
-  for (const cookiePath of COOKIES_PATHS) {
-    if (fs.existsSync(cookiePath)) {
-      console.log(`[cookies] Archivo encontrado: ${cookiePath}`);
-      return cookiePath;
+const TMP_COOKIES_PATH = path.join(os.tmpdir(), 'yt-cookies.txt');
+
+/**
+ * Variable para cachear la ruta de cookies válida
+ */
+let cachedCookiesPath = null;
+
+/**
+ * Copia las cookies a un directorio temporal escribible
+ * @returns {string|null} - Ruta temporal de cookies o null si no existe
+ */
+const prepareCookiesPath = () => {
+  // Si ya tenemos una ruta cacheada y el archivo existe, usarla
+  if (cachedCookiesPath && fs.existsSync(cachedCookiesPath)) {
+    return cachedCookiesPath;
+  }
+
+  // Buscar el archivo de cookies en las rutas origen
+  for (const sourcePath of COOKIES_SOURCE_PATHS) {
+    if (fs.existsSync(sourcePath)) {
+      try {
+        // Copiar cookies a directorio temporal
+        fs.copyFileSync(sourcePath, TMP_COOKIES_PATH);
+        console.log(`[cookies] Copiado de ${sourcePath} a ${TMP_COOKIES_PATH}`);
+        cachedCookiesPath = TMP_COOKIES_PATH;
+        return cachedCookiesPath;
+      } catch (error) {
+        console.error(`[cookies] Error al copiar cookies: ${error.message}`);
+        // Si falla la copia, intentar usar el original
+        if (sourcePath === path.join(process.cwd(), 'cookies.txt')) {
+          cachedCookiesPath = sourcePath;
+          return cachedCookiesPath;
+        }
+      }
     }
   }
+
   console.log('[cookies] No se encontró archivo de cookies, continuando sin autenticación');
   return null;
 };
 
 /**
- * Genera las opciones base para youtube-dl-exec incluyendo cookies si están disponibles
+ * Genera las opciones base para youtube-dl-exec 
  * @returns {Object} - Opciones base para yt-dlp
  */
-const getBaseOptions = () => {
+const getDownloadOptions = () => {
   const options = {
     noCheckCertificates: true,
     preferFreeFormats: true
   };
 
-  const cookiesPath = getCookiesPath();
+  const cookiesPath = prepareCookiesPath();
+  if (cookiesPath) {
+    // Manejar rutas con espacios
+    options.cookies = cookiesPath.includes(' ') ? `"${cookiesPath}"` : cookiesPath;
+  }
+
+  return options;
+};
+
+/**
+ * Genera opciones mínimas para obtener metadata
+ * @returns {Object} - Opciones para extracción de info
+ */
+const getInfoOptions = () => {
+  const options = {
+    noCheckCertificates: true,
+    skipDownload: true,
+    noPlaylist: true
+  };
+
+  const cookiesPath = prepareCookiesPath();
   if (cookiesPath) {
     options.cookies = cookiesPath.includes(' ') ? `"${cookiesPath}"` : cookiesPath;
   }
@@ -67,7 +117,7 @@ const isValidYoutubeUrl = (url) => {
 const getVideoInfo = async (url) => {
   try {
     const info = await youtubedl(url, {
-      ...getBaseOptions(),
+      ...getInfoOptions(),
       dumpSingleJson: true,
       noWarnings: true
     });
@@ -109,7 +159,7 @@ const downloadAndConvertToMp3 = async (url) => {
 
     // 5. Descargar y convertir usando yt-dlp con ffmpeg
     await youtubedl(url, {
-      ...getBaseOptions(),
+      ...getDownloadOptions(),
       extractAudio: true,
       audioFormat: 'mp3',
       audioQuality: 0,
