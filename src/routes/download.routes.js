@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const downloadController = require('../controllers/download.controller');
+const { validateUrl } = require('../middlewares/validateUrl');
 
 /**
  * @route   POST /api/descargar
@@ -8,7 +9,7 @@ const downloadController = require('../controllers/download.controller');
  * @body    { url: "https://youtube.com/watch?v=xxx" }
  * @returns Archivo MP3 descargable
  */
-router.post('/descargar', downloadController.descargarAudio);
+router.post('/descargar', validateUrl, downloadController.descargarAudio);
 
 /**
  * @route   POST /api/info
@@ -16,6 +17,6 @@ router.post('/descargar', downloadController.descargarAudio);
  * @body    { url: "https://youtube.com/watch?v=xxx" }
  * @returns { success, data: { title, author, duration, thumbnail } }
  */
-router.post('/info', downloadController.obtenerInfo);
+router.post('/info', validateUrl, downloadController.obtenerInfo);
 
 module.exports = router;
