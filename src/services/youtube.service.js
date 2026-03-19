@@ -38,7 +38,7 @@ const getBaseOptions = () => {
 
   const cookiesPath = getCookiesPath();
   if (cookiesPath) {
-    options.cookies = `"${cookiesPath}"`;
+    options.cookies = cookiesPath.includes(' ') ? `"${cookiesPath}"` : cookiesPath;
   }
 
   return options;
