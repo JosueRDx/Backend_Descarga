@@ -83,7 +83,8 @@ const getInfoOptions = () => {
   const options = {
     noCheckCertificates: true,
     skipDownload: true,
-    noPlaylist: true
+    noPlaylist: true,
+    noCheckFormats: true
   };
 
   const cookiesPath = prepareCookiesPath();
@@ -119,7 +120,8 @@ const getVideoInfo = async (url) => {
     const info = await youtubedl(url, {
       ...getInfoOptions(),
       dumpSingleJson: true,
-      noWarnings: true
+      noWarnings: true,
+      format: 'best*'
     });
 
     return {
@@ -128,8 +130,26 @@ const getVideoInfo = async (url) => {
       duration: info.duration || 0,
       thumbnail: info.thumbnail || info.thumbnails?.[0]?.url || null
     };
-  } catch (error) {
-    throw new Error(`Error al obtener información del video: ${error.message}`);
+  } catch (firstError) {
+    console.warn(`[getVideoInfo] Primer intento falló: ${firstError.message}. Reintentando sin restricción de formato...`);
+
+    try {
+      const info = await youtubedl(url, {
+        ...getInfoOptions(),
+        dumpSingleJson: true,
+        noWarnings: true,
+        format: 'best/bestaudio/bestvideo/worst'
+      });
+
+      return {
+        title: info.title || 'Sin título',
+        author: info.uploader || info.channel || 'Desconocido',
+        duration: info.duration || 0,
+        thumbnail: info.thumbnail || info.thumbnails?.[0]?.url || null
+      };
+    } catch (secondError) {
+      throw new Error(`Error al obtener información del video: ${secondError.message}`);
+    }
   }
 };
 
