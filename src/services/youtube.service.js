@@ -5,6 +5,44 @@ const os = require('os');
 const { generateUniqueFileName, getTmpFilePath } = require('../utils/fileManager');
 
 /**
+ * Instancia de yt-dlp.
+ * En Docker instalamos el binario aparte (YT_DLP_PATH) para poder actualizarlo
+ * sin depender de la caché de npm/Docker, en local se usa el que baja npm
+ */
+const YT_DLP_BINARY = process.env.YT_DLP_PATH || youtubedl.constants.YOUTUBE_DL_PATH;
+
+const ytdlp = process.env.YT_DLP_PATH
+  ? youtubedl.create(process.env.YT_DLP_PATH)
+  : youtubedl;
+
+/**
+ * youtube-dl-exec solo usa shell en Windows cuando la ruta del binario tiene
+ * espacios, con shell hay que entrecomillar las rutas con espacios, sin shell
+ * (Linux/Render) las comillas acabarían formando parte de la ruta
+ */
+const USES_SHELL = process.platform === 'win32' && /\s/.test(YT_DLP_BINARY);
+
+/**
+ * Entrecomilla una ruta solo si el proceso se lanza a través de un shell
+ * @param {string} value - Ruta a escapar
+ * @returns {string}
+ */
+const quoteIfNeeded = (value) =>
+  USES_SHELL && /\s/.test(value) ? `"${value}"` : value;
+
+/**
+ * Runtime de JavaScript que usa yt-dlp para resolver los retos de YouTube.
+ * Sin esto YouTube devuelve solo formatos "storyboard" y yt-dlp falla con
+ * "Requested format is not available", se puede desactivar con YTDLP_JS_RUNTIME=none
+ */
+const JS_RUNTIME = process.env.YTDLP_JS_RUNTIME || 'node';
+
+/**
+ * Selector de formato para audio
+ */
+const AUDIO_FORMAT = 'bestaudio/best';
+
+/**
  * Rutas posibles para el archivo de cookies
  */
 const COOKIES_SOURCE_PATHS = [
@@ -23,6 +61,11 @@ const TMP_COOKIES_PATH = path.join(os.tmpdir(), 'yt-cookies.txt');
 let cachedCookiesPath = null;
 
 /**
+ * Evita repetir el log de "sin cookies" en cada reintento
+ */
+let cookiesMissingLogged = false;
+
+/**
  * Copia las cookies a un directorio temporal escribible
  * @returns {string|null} - Ruta temporal de cookies o null si no existe
  */
@@ -36,7 +79,7 @@ const prepareCookiesPath = () => {
   for (const sourcePath of COOKIES_SOURCE_PATHS) {
     if (fs.existsSync(sourcePath)) {
       try {
-        // Copiar cookies a directorio temporal
+        // Copiar cookies a directorio temporal (yt-dlp necesita poder reescribirlas)
         fs.copyFileSync(sourcePath, TMP_COOKIES_PATH);
         console.log(`[cookies] Copiado de ${sourcePath} a ${TMP_COOKIES_PATH}`);
         cachedCookiesPath = TMP_COOKIES_PATH;
@@ -52,46 +95,139 @@ const prepareCookiesPath = () => {
     }
   }
 
-  console.log('[cookies] No se encontró archivo de cookies, continuando sin autenticación');
+  if (!cookiesMissingLogged) {
+    console.log('[cookies] No se encontró archivo de cookies, continuando sin autenticación');
+    cookiesMissingLogged = true;
+  }
   return null;
 };
 
 /**
- * Genera las opciones base para youtube-dl-exec 
- * @returns {Object} - Opciones base para yt-dlp
+ * Estrategias de extracción, en orden de preferencia
+ * YouTube bloquea distintos clientes según la IP (las IPs de Render son de
+ * datacenter y suelen estar restringidas), así que probamos varias combinaciones
+ * de cliente / cookies antes de darnos por vencidos
  */
-const getDownloadOptions = () => {
-  const options = {
-    noCheckCertificates: true,
-    preferFreeFormats: true
-  };
+const STRATEGIES = [
+  { name: 'default + cookies', extractorArgs: null, useCookies: true },
+  { name: 'tv,web_safari + cookies', extractorArgs: 'youtube:player_client=tv,web_safari', useCookies: true },
+  { name: 'android_vr,mweb + cookies', extractorArgs: 'youtube:player_client=android_vr,mweb', useCookies: true },
+  { name: 'default sin cookies', extractorArgs: null, useCookies: false }
+];
 
-  const cookiesPath = prepareCookiesPath();
-  if (cookiesPath) {
-    // Manejar rutas con espacios
-    options.cookies = cookiesPath.includes(' ') ? `"${cookiesPath}"` : cookiesPath;
+/**
+ * Índice de la última estrategia que funcionó (para no reintentar desde cero)
+ */
+let preferredStrategy = 0;
+
+/**
+ * Cache de la comprobación de soporte de --js-runtimes
+ */
+let jsRuntimeSupported = null;
+
+/**
+ * Comprueba si el binario de yt-dlp soporta --js-runtimes (versiones recientes)
+ * @returns {Promise<boolean>}
+ */
+const supportsJsRuntime = async () => {
+  if (JS_RUNTIME === 'none') return false;
+  if (jsRuntimeSupported !== null) return jsRuntimeSupported;
+
+  try {
+    const { exitCode } = await ytdlp.exec('--version', { jsRuntimes: JS_RUNTIME });
+    jsRuntimeSupported = exitCode === 0;
+  } catch (error) {
+    jsRuntimeSupported = false;
   }
 
-  return options;
+  if (!jsRuntimeSupported) {
+    console.warn(
+      `[yt-dlp] El binario no soporta --js-runtimes ${JS_RUNTIME}; ` +
+      'actualiza yt-dlp o YouTube devolverá formatos incompletos.'
+    );
+  }
+
+  return jsRuntimeSupported;
 };
 
 /**
- * Genera opciones mínimas para obtener metadata
- * @returns {Object} - Opciones para extracción de info
+ * Extrae un mensaje de error legible de un fallo de yt-dlp
+ * @param {Error} error
+ * @returns {string}
  */
-const getInfoOptions = () => {
-  const options = {
+const summarizeError = (error) => {
+  const raw = (error && (error.stderr || error.message)) || 'Error desconocido';
+  const lines = String(raw)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const errorLines = lines.filter((line) => line.startsWith('ERROR:'));
+  return (errorLines.length ? errorLines : lines).slice(-3).join(' | ');
+};
+
+/**
+ * Construye los flags de yt-dlp para una estrategia concreta
+ * @param {Object} strategy - Estrategia de extracción
+ * @param {Object} extraFlags - Flags específicos de la operación
+ * @returns {Promise<Object>}
+ */
+const buildFlags = async (strategy, extraFlags) => {
+  const flags = {
     noCheckCertificates: true,
-    skipDownload: true,
-    noPlaylist: true
+    noWarnings: true,
+    noPlaylist: true,
+    format: AUDIO_FORMAT,
+    retries: 3,
+    socketTimeout: 30,
+    ...extraFlags
   };
 
-  const cookiesPath = prepareCookiesPath();
-  if (cookiesPath) {
-    options.cookies = cookiesPath.includes(' ') ? `"${cookiesPath}"` : cookiesPath;
+  if (await supportsJsRuntime()) {
+    flags.jsRuntimes = JS_RUNTIME;
   }
 
-  return options;
+  if (strategy.extractorArgs) {
+    flags.extractorArgs = strategy.extractorArgs;
+  }
+
+  if (strategy.useCookies) {
+    const cookiesPath = prepareCookiesPath();
+    if (cookiesPath) flags.cookies = quoteIfNeeded(cookiesPath);
+  }
+
+  return flags;
+};
+
+/**
+ * Ejecuta yt-dlp probando las distintas estrategias hasta que una funcione
+ * @param {string} url - URL del video
+ * @param {Object} extraFlags - Flags específicos de la operación
+ * @param {string} label - Descripción de la operación
+ * @returns {Promise<Object|string>} - Salida de yt-dlp
+ */
+const runYtDlp = async (url, extraFlags, label) => {
+  const order = [preferredStrategy, ...STRATEGIES.map((_, index) => index)]
+    .filter((index, position, all) => all.indexOf(index) === position);
+
+  let lastError;
+
+  for (const index of order) {
+    const strategy = STRATEGIES[index];
+    try {
+      const result = await ytdlp(url, await buildFlags(strategy, extraFlags));
+      preferredStrategy = index;
+      if (index !== order[0]) {
+        console.log(`[yt-dlp] ${label}: OK con estrategia "${strategy.name}"`);
+      }
+      return result;
+    } catch (error) {
+      lastError = error;
+      console.warn(`[yt-dlp] ${label}: falló con estrategia "${strategy.name}" -> ${summarizeError(error)}`);
+    }
+  }
+
+  throw new Error(summarizeError(lastError));
 };
 
 /**
@@ -116,11 +252,11 @@ const isValidYoutubeUrl = (url) => {
  */
 const getVideoInfo = async (url) => {
   try {
-    const info = await youtubedl(url, {
-      ...getInfoOptions(),
-      dumpSingleJson: true,
-      noWarnings: true
-    });
+    const info = await runYtDlp(
+      url,
+      { dumpSingleJson: true, skipDownload: true },
+      'obtener info'
+    );
 
     return {
       title: info.title || 'Sin título',
@@ -130,6 +266,23 @@ const getVideoInfo = async (url) => {
     };
   } catch (error) {
     throw new Error(`Error al obtener información del video: ${error.message}`);
+  }
+};
+
+/**
+ * Busca el archivo generado por yt-dlp cuando la extensión no es la esperada
+ * @param {string} outputTemplate - Ruta base
+ * @returns {string|null} - Ruta del archivo encontrado
+ */
+const findGeneratedFile = (outputTemplate) => {
+  const dir = path.dirname(outputTemplate);
+  const base = path.basename(outputTemplate);
+
+  try {
+    const match = fs.readdirSync(dir).find((file) => file.startsWith(`${base}.`));
+    return match ? path.join(dir, match) : null;
+  } catch (error) {
+    return null;
   }
 };
 
@@ -158,19 +311,30 @@ const downloadAndConvertToMp3 = async (url) => {
     console.log('Iniciando descarga y conversión a MP3 con yt-dlp...');
 
     // 5. Descargar y convertir usando yt-dlp con ffmpeg
-    await youtubedl(url, {
-      ...getDownloadOptions(),
-      extractAudio: true,
-      audioFormat: 'mp3',
-      audioQuality: 0,
-      output: `"${outputTemplate}.%(ext)s"`,
-      noWarnings: true,
-      noPlaylist: true
-    });
+    await runYtDlp(
+      url,
+      {
+        extractAudio: true,
+        audioFormat: 'mp3',
+        audioQuality: 0,
+        output: quoteIfNeeded(`${outputTemplate}.%(ext)s`)
+      },
+      'descargar audio'
+    );
 
     console.log('Descarga y conversión a MP3 completada');
 
-    // 6. Retornar información del archivo convertido
+    // 6. Verificar que el archivo existe realmente
+    if (!fs.existsSync(mp3FilePath)) {
+      const generated = findGeneratedFile(outputTemplate);
+      if (!generated) {
+        throw new Error('yt-dlp terminó pero no se generó ningún archivo de audio');
+      }
+      console.warn(`[yt-dlp] Archivo generado con otra extensión: ${generated}`);
+      fs.renameSync(generated, mp3FilePath);
+    }
+
+    // 7. Retornar información del archivo convertido
     return {
       filePath: mp3FilePath,
       fileName: mp3FileName,
