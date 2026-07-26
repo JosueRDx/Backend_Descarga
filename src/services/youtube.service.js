@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { generateUniqueFileName, getTmpFilePath } = require('../utils/fileManager');
+const cacheVideo = require('../utils/cacheVideo');
 
 /**
  * Instancia de yt-dlp.
@@ -251,6 +252,13 @@ const isValidYoutubeUrl = (url) => {
  * @returns {Promise<Object>} - Información del video
  */
 const getVideoInfo = async (url) => {
+  // Si el video ya se consultó, se responde al instante en lugar de repetir
+  const enCache = cacheVideo.obtener(url);
+  if (enCache) {
+    console.log(`[cache] Información reutilizada de ${cacheVideo.extraerIdVideo(url)}`);
+    return enCache;
+  }
+
   try {
     const info = await runYtDlp(
       url,
@@ -258,12 +266,16 @@ const getVideoInfo = async (url) => {
       'obtener info'
     );
 
-    return {
+    const resultado = {
       title: info.title || 'Sin título',
       author: info.uploader || info.channel || 'Desconocido',
       duration: info.duration || 0,
       thumbnail: info.thumbnail || info.thumbnails?.[0]?.url || null
     };
+
+    // Se guarda el resultado en caché para no repetir la consulta
+    cacheVideo.guardar(url, resultado);
+    return resultado;
   } catch (error) {
     throw new Error(`Error al obtener información del video: ${error.message}`);
   }
@@ -297,7 +309,7 @@ const downloadAndConvertToMp3 = async (url) => {
     throw new Error('URL de YouTube no válida');
   }
 
-  // 2. Obtener información del video
+  // 2. Obtener información del video y si existe en caché se reutiliza
   const videoInfo = await getVideoInfo(url);
 
   // 3. Generar nombre de archivo MP3
