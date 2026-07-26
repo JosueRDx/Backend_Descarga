@@ -28,8 +28,10 @@ RUN curl -fsSL "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSI
     && /usr/local/bin/yt-dlp --version
 
 # Usar el binario instalado arriba y evitar que youtube-dl-exec baje el suyo
+# El binario standalone ya incluye Python, por eso se omite su comprobación
 ENV YT_DLP_PATH=/usr/local/bin/yt-dlp
 ENV YOUTUBE_DL_SKIP_DOWNLOAD=true
+ENV YOUTUBE_DL_SKIP_PYTHON_CHECK=1
 
 # Crear directorio de trabajo
 WORKDIR /app
