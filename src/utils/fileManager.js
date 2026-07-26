@@ -1,7 +1,25 @@
 const fs = require('fs');
 const path = require('path');
 
-const TMP_DIR = path.join(__dirname, '../../..', 'tmp');
+/**
+ * Carpeta donde se guardan los MP3 temporales.
+ * Se ancla a la raíz del proyecto (src/utils -> ../..), no al directorio de
+ * trabajo, para que no dependa de desde dónde se arranque el proceso.
+ * Se puede sobreescribir con la variable de entorno TMP_DIR.
+ */
+const TMP_DIR = process.env.TMP_DIR || path.join(__dirname, '..', '..', 'tmp');
+
+/**
+ * Crea la carpeta temporal si no existe
+ * @returns {string} - Ruta de la carpeta temporal
+ */
+const ensureTmpDir = () => {
+  if (!fs.existsSync(TMP_DIR)) {
+    fs.mkdirSync(TMP_DIR, { recursive: true });
+    console.log(`Carpeta temporal creada: ${TMP_DIR}`);
+  }
+  return TMP_DIR;
+};
 
 /**
  * Elimina un archivo específico
@@ -39,6 +57,7 @@ const deleteFileAfterDelay = (filePath, delayMs = 300000) => {
  */
 const cleanTmpFolder = async () => {
   try {
+    ensureTmpDir();
     const files = await fs.promises.readdir(TMP_DIR);
     let deletedCount = 0;
 
@@ -75,13 +94,14 @@ const generateUniqueFileName = (extension = 'mp3') => {
  * @returns {string} - Ruta completa del archivo
  */
 const getTmpFilePath = (fileName) => {
-  return path.join(TMP_DIR, fileName);
+  return path.join(ensureTmpDir(), fileName);
 };
 
 module.exports = {
   deleteFile,
   deleteFileAfterDelay,
   cleanTmpFolder,
+  ensureTmpDir,
   generateUniqueFileName,
   getTmpFilePath,
   TMP_DIR

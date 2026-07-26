@@ -45,8 +45,9 @@ RUN npm ci --omit=dev && npm cache clean --force
 # Copiar el código fuente
 COPY . .
 
-# Crear usuario no-root por seguridad
-RUN addgroup --system --gid 1001 nodejs \
+# Carpeta de MP3 temporales y usuario no-root por seguridad
+RUN mkdir -p /app/tmp \
+    && addgroup --system --gid 1001 nodejs \
     && adduser --system --uid 1001 appuser \
     && chown -R appuser:nodejs /app
 

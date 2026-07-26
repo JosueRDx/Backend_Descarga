@@ -15,6 +15,7 @@ npm-debug.log*
 cookies.txt
 
 # Directorio temporal local
+tmp/
 temp/
 downloads/
 

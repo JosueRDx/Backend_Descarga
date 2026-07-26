@@ -4,6 +4,7 @@ const cors = require('cors');
 
 // Importar rutas
 const downloadRoutes = require('./routes/download.routes');
+const { cleanTmpFolder, TMP_DIR } = require('./utils/fileManager');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -44,9 +45,13 @@ app.use((err, req, res, next) => {
 });
 
 // Iniciar servidor
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Servidor corriendo en http://localhost:${PORT}`);
+  console.log(`Carpeta temporal: ${TMP_DIR}`);
   console.log('Endpoints disponibles:');
   console.log('  POST /api/descargar - Descargar audio como MP3');
   console.log('  POST /api/info      - Obtener información del video');
+
+  // Borrar descargas de archivos de ejecuciones anteriores
+  await cleanTmpFolder();
 });
